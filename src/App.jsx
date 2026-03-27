@@ -147,7 +147,23 @@ async function analyseWithGroq(service, apiKey, retries = 2) {
   return JSON.parse(clean);
 }
 
-async function analyseService(service, provider, apiKey) {
+async function analyseWithComputerUse(service, apiKey, backendUrl) {
+  const response = await fetch(`${backendUrl}/api/computer-use-audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      serviceName: service.name,
+      serviceUrl: service.url,
+      apiKey: apiKey,
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+async function analyseService(service, provider, apiKey, backendUrl) {
+  if (provider === "computer-use") return analyseWithComputerUse(service, apiKey, backendUrl);
   if (provider === "anthropic") return analyseWithAnthropic(service, apiKey);
   if (provider === "groq") return analyseWithGroq(service, apiKey);
   return analyseWithOllama(service);
@@ -385,6 +401,7 @@ export default function App() {
   const [view, setView] = useState("services");
   const [provider, setProvider] = useState(() => loadFromStorage("audit-provider", "ollama"));
   const [apiKey, setApiKey] = useState(() => loadFromStorage("audit-apikey", ""));
+  const [backendUrl, setBackendUrl] = useState(() => loadFromStorage("audit-backend-url", "https://govuk-data-audit-production.up.railway.app"));
   const [dbLoaded, setDbLoaded] = useState(false);
 
   // Load existing results from Supabase on startup
@@ -432,6 +449,7 @@ export default function App() {
   useEffect(() => { saveToStorage("audit-results", results); }, [results]);
   useEffect(() => { saveToStorage("audit-provider", provider); }, [provider]);
   useEffect(() => { saveToStorage("audit-apikey", apiKey); }, [apiKey]);
+  useEffect(() => { saveToStorage("audit-backend-url", backendUrl); }, [backendUrl]);
 
   const getKey = s => s.url;
 
@@ -451,13 +469,13 @@ export default function App() {
     const key = getKey(service);
     setResults(r => ({ ...r, [key]: { status: STATUS.LOADING } }));
     try {
-      const data = await analyseService(service, provider, apiKey);
+      const data = await analyseService(service, provider, apiKey, backendUrl);
       setResults(r => ({ ...r, [key]: { status: STATUS.DONE, data } }));
       saveToDb(service, data.dataFields, provider);
     } catch (err) {
       setResults(r => ({ ...r, [key]: { status: STATUS.ERROR, error: err.message } }));
     }
-  }, [provider, apiKey]);
+  }, [provider, apiKey, backendUrl]);
 
   const analyseAll = async () => {
     setAnalysing(true);
@@ -524,6 +542,10 @@ export default function App() {
               <input type="radio" name="provider" value="anthropic" checked={provider === "anthropic"} onChange={() => setProvider("anthropic")} />
               <strong>Anthropic API</strong> <span style={{ color: "#505a5f" }}>(Claude, requires API key)</span>
             </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
+              <input type="radio" name="provider" value="computer-use" checked={provider === "computer-use"} onChange={() => setProvider("computer-use")} />
+              <strong>Computer Use</strong> <span style={{ color: "#505a5f" }}>(navigates live service, requires API key + backend)</span>
+            </label>
           </div>
           {provider === "ollama" && (
             <div style={{ fontSize: 13, color: "#505a5f" }}>
@@ -552,6 +574,29 @@ export default function App() {
                 style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit" }}
               />
               {!apiKey && <div style={{ fontSize: 13, color: "#d4351c", marginTop: 6 }}>API key required</div>}
+            </div>
+          )}
+          {provider === "computer-use" && (
+            <div>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="Anthropic API key (sk-ant-...)"
+                style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit", marginBottom: 8 }}
+              />
+              {!apiKey && <div style={{ fontSize: 13, color: "#d4351c", marginBottom: 8 }}>API key required</div>}
+              <input
+                type="text"
+                value={backendUrl}
+                onChange={e => setBackendUrl(e.target.value)}
+                placeholder="Backend server URL"
+                style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit", marginBottom: 6 }}
+              />
+              <div style={{ fontSize: 13, color: "#505a5f" }}>
+                Uses Claude to actually navigate the live service in a browser, filling in forms and cataloguing every data field.
+                Requires the backend server running (<code>cd server && npm start</code>). Each service takes 2-10 minutes.
+              </div>
             </div>
           )}
         </div>
