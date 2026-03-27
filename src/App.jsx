@@ -122,7 +122,7 @@ async function analyseWithGroq(service, apiKey) {
       "Authorization": `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "gemma2-9b-it",
+      model: "llama-3.3-70b-versatile",
       messages: [{ role: "user", content: buildPrompt(service) }],
       response_format: { type: "json_object" },
       temperature: 0.2,
