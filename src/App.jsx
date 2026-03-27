@@ -25,8 +25,8 @@ const DATA_CATEGORIES = {
   employment: { label: "Employment", color: "#505a5f" },
 };
 
-async function analyseService(service) {
-  const prompt = `List every individual data field collected from users by this GOV.UK service.
+function buildPrompt(service) {
+  return `List every individual data field collected from users by this GOV.UK service.
 
 Service: ${service.name}
 URL: ${service.url}
@@ -57,23 +57,51 @@ Respond with JSON ONLY:
     }
   ]
 }`;
+}
 
+async function analyseWithOllama(service) {
   const response = await fetch("http://localhost:11434/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gemma3:4b",
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user", content: buildPrompt(service) }],
       format: "json",
       stream: false,
     }),
   });
-
   const data = await response.json();
   if (data.error) throw new Error(data.error);
   const text = data.message?.content || "";
   const clean = text.replace(/```json|```/g, "").trim();
   return JSON.parse(clean);
+}
+
+async function analyseWithAnthropic(service, apiKey) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      messages: [{ role: "user", content: buildPrompt(service) }],
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  const text = data.content?.map(b => b.text || "").join("") || "";
+  const clean = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(clean);
+}
+
+async function analyseService(service, provider, apiKey) {
+  if (provider === "anthropic") return analyseWithAnthropic(service, apiKey);
+  return analyseWithOllama(service);
 }
 
 function CategoryTag({ category }) {
@@ -306,6 +334,8 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [analysing, setAnalysing] = useState(false);
   const [view, setView] = useState("services"); // "services" or "overlaps"
+  const [provider, setProvider] = useState("ollama"); // "ollama" or "anthropic"
+  const [apiKey, setApiKey] = useState("");
 
   const getKey = s => s.url;
 
@@ -313,12 +343,12 @@ export default function App() {
     const key = getKey(service);
     setResults(r => ({ ...r, [key]: { status: STATUS.LOADING } }));
     try {
-      const data = await analyseService(service);
+      const data = await analyseService(service, provider, apiKey);
       setResults(r => ({ ...r, [key]: { status: STATUS.DONE, data } }));
     } catch (err) {
       setResults(r => ({ ...r, [key]: { status: STATUS.ERROR, error: err.message } }));
     }
-  }, []);
+  }, [provider, apiKey]);
 
   const analyseAll = async () => {
     setAnalysing(true);
@@ -364,6 +394,38 @@ export default function App() {
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px" }}>
 
         <SummaryBar services={services} results={results} />
+
+        {/* AI provider settings */}
+        <div style={{ background: "#fff", border: "1px solid #b1b4b6", padding: "20px", marginBottom: 24 }}>
+          <h2 style={{ margin: "0 0 12px", fontSize: 20, fontWeight: 700, color: "#0b0c0c" }}>AI provider</h2>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
+              <input type="radio" name="provider" value="ollama" checked={provider === "ollama"} onChange={() => setProvider("ollama")} />
+              <strong>Ollama</strong> <span style={{ color: "#505a5f" }}>(local, free)</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
+              <input type="radio" name="provider" value="anthropic" checked={provider === "anthropic"} onChange={() => setProvider("anthropic")} />
+              <strong>Anthropic API</strong> <span style={{ color: "#505a5f" }}>(Claude, requires API key)</span>
+            </label>
+          </div>
+          {provider === "ollama" && (
+            <div style={{ fontSize: 13, color: "#505a5f" }}>
+              Using gemma3:4b via Ollama on localhost:11434. Make sure Ollama is running.
+            </div>
+          )}
+          {provider === "anthropic" && (
+            <div>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="Anthropic API key (sk-ant-...)"
+                style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit" }}
+              />
+              {!apiKey && <div style={{ fontSize: 13, color: "#d4351c", marginTop: 6 }}>API key required</div>}
+            </div>
+          )}
+        </div>
 
         {/* Controls */}
         <div style={{ background: "#fff", border: "1px solid #b1b4b6", padding: "20px", marginBottom: 24 }}>
