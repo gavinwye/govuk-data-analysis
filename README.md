@@ -4,6 +4,10 @@ A tool for identifying what personal data is collected by GOV.UK services and fi
 
 It analyses each service's user journey and lists every individual data field collected (e.g. "First name", "Postcode", "Sort code") rather than broad categories. Once multiple services are analysed, a cross-service overlap view shows which data fields are collected by more than one service.
 
+## Example
+
+![Screenshot showing the data fields collected by the Register to vote service, including First Name, Last Name, Date of Birth, Postcode, Email Address and more](screenshot.png)
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) v18 or later
