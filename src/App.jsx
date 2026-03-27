@@ -119,7 +119,7 @@ async function analyseWithAnthropic(service, apiKey) {
   return JSON.parse(clean);
 }
 
-async function analyseWithGroq(service, apiKey) {
+async function analyseWithGroq(service, apiKey, retries = 2) {
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -134,7 +134,14 @@ async function analyseWithGroq(service, apiKey) {
     }),
   });
   const data = await response.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  if (data.error) {
+    // Auto-retry on rate limit
+    if (response.status === 429 && retries > 0) {
+      await new Promise(r => setTimeout(r, 8000));
+      return analyseWithGroq(service, apiKey, retries - 1);
+    }
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
   const text = data.choices?.[0]?.message?.content || "";
   const clean = text.replace(/```json|```/g, "").trim();
   return JSON.parse(clean);
@@ -458,6 +465,10 @@ export default function App() {
       const key = getKey(s);
       if (results[key]?.status === STATUS.DONE) continue;
       await analyseOne(s);
+      // Wait between requests to avoid rate limits (Groq free tier: 12k TPM)
+      if (provider === "groq") {
+        await new Promise(r => setTimeout(r, 6000));
+      }
     }
     setAnalysing(false);
   };
