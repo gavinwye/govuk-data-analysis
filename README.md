@@ -4,9 +4,11 @@ A tool for identifying what personal data is collected by GOV.UK services and fi
 
 It analyses each service's user journey and lists every individual data field collected (e.g. "First name", "Postcode", "Sort code") rather than broad categories. Once multiple services are analysed, a cross-service overlap view shows which data fields are collected by more than one service.
 
+You can also try it at https://statuesque-hummingbird-b3f62b.netlify.app (requires a Groq or Anthropic API key).
+
 ## Example
 
-![Screenshot showing the data fields collected by the Register to vote service, including First Name, Last Name, Date of Birth, Postcode, Email Address and more](screenshot.png)
+![Screenshot showing all 8 sample services analysed, with data categories and field counts for each service](screenshot.png)
 
 ## Prerequisites
 
@@ -14,7 +16,7 @@ It analyses each service's user journey and lists every individual data field co
 - One of the following AI providers:
   - **Ollama** (free, runs locally) — install from https://ollama.ai/
   - **Groq** (free tier, cloud) — get an API key at https://console.groq.com/keys
-  - **Anthropic API key** — sign up at https://console.anthropic.com/
+  - **Anthropic API** — sign up at https://console.anthropic.com/
 
 ### Option 1: Ollama (local, free)
 
@@ -29,7 +31,7 @@ ollama pull gemma3:4b
 
 ### Option 2: Groq (cloud, free tier)
 
-No additional setup needed. Get a free API key at https://console.groq.com/keys and enter it in the app. This uses Gemma 2 9B hosted on Groq's infrastructure.
+No additional setup needed. Get a free API key at https://console.groq.com/keys and enter it in the app. This uses Llama 3.3 70B hosted on Groq's infrastructure.
 
 ### Option 3: Anthropic API
 
@@ -48,22 +50,24 @@ This starts a local dev server, typically at `http://localhost:5173/`.
 
 ## How to use
 
-1. Choose your AI provider at the top of the page (Ollama or Anthropic API)
+1. Choose your AI provider at the top of the page (Ollama, Groq, or Anthropic API)
 2. The tool comes pre-loaded with 8 sample GOV.UK services
 3. Click **Analyse** on any service to identify the data it collects, or **Analyse all** to run them all
 4. Click **Show fields** on an analysed service to see the full list of data fields
 5. Once 2 or more services are analysed, use the **Data overlaps** tab to see which data fields are collected by multiple services
 
-You can add additional services using the "Add a service" form at the top. You can find a list of GOV.UK services at https://www.gov.uk/search/services.
+You can add additional services using the "Add a service" form. Find services to audit from the [GOV.UK services list](https://govuk-services-list.x-govuk.org/topic).
+
+Results are saved to your browser's local storage, so they persist across page refreshes.
 
 ## How it works
 
 The tool sends each service's details to the chosen AI model, which returns a structured list of every data field collected during the user journey. Field names are normalised and compared across services to identify overlaps.
 
-When using Ollama, all analysis runs locally on your machine. When using the Anthropic API, service names and URLs are sent to the Anthropic API for analysis.
+When using Ollama, all analysis runs locally on your machine. When using Groq or the Anthropic API, service names and URLs are sent to the respective API for analysis.
 
 ## Notes
 
-- Analysis quality depends on the model used. The Anthropic API (Claude Sonnet) will produce more detailed results than smaller local models. If using Ollama, larger models (e.g. `gemma3:12b`) will be more accurate than smaller ones.
+- Analysis quality depends on the model used. The Anthropic API (Claude Sonnet) will produce the most detailed results. Groq (Llama 3.3 70B) is a good free alternative. If using Ollama, larger models (e.g. `gemma3:12b`) will be more accurate than smaller ones.
 - Results are AI-generated based on publicly known service designs. Always verify findings against the service's own privacy notice.
 - This tool is not a substitute for a formal Data Protection Impact Assessment (DPIA).
