@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
+import { supabase } from "./supabase";
 
 function loadFromStorage(key, fallback) {
   try {
@@ -373,6 +374,48 @@ export default function App() {
   const [view, setView] = useState("services");
   const [provider, setProvider] = useState(() => loadFromStorage("audit-provider", "ollama"));
   const [apiKey, setApiKey] = useState(() => loadFromStorage("audit-apikey", ""));
+  const [dbLoaded, setDbLoaded] = useState(false);
+
+  // Load existing results from Supabase on startup
+  useEffect(() => {
+    async function loadFromDb() {
+      const { data, error } = await supabase
+        .from("service_audits")
+        .select("*");
+      if (error || !data) { setDbLoaded(true); return; }
+
+      setResults(prev => {
+        const merged = { ...prev };
+        const knownUrls = new Set(services.map(s => s.url));
+        const newServices = [];
+
+        for (const row of data) {
+          // Add result
+          merged[row.service_url] = {
+            status: STATUS.DONE,
+            data: { dataFields: row.data_fields },
+          };
+          // Add service if not already in the list
+          if (!knownUrls.has(row.service_url)) {
+            knownUrls.add(row.service_url);
+            newServices.push({
+              name: row.service_name,
+              url: row.service_url,
+              organisation: row.organisation || "Unknown",
+              topic: row.topic || "Unknown",
+            });
+          }
+        }
+
+        if (newServices.length > 0) {
+          setServices(s => [...s, ...newServices]);
+        }
+        return merged;
+      });
+      setDbLoaded(true);
+    }
+    loadFromDb();
+  }, []);
 
   useEffect(() => { saveToStorage("audit-services", services); }, [services]);
   useEffect(() => { saveToStorage("audit-results", results); }, [results]);
@@ -381,12 +424,25 @@ export default function App() {
 
   const getKey = s => s.url;
 
+  // Save a result to Supabase
+  async function saveToDb(service, dataFields, usedProvider) {
+    await supabase.from("service_audits").upsert({
+      service_name: service.name,
+      service_url: service.url,
+      organisation: service.organisation,
+      topic: service.topic,
+      data_fields: dataFields,
+      provider: usedProvider,
+    }, { onConflict: "service_url" });
+  }
+
   const analyseOne = useCallback(async (service) => {
     const key = getKey(service);
     setResults(r => ({ ...r, [key]: { status: STATUS.LOADING } }));
     try {
       const data = await analyseService(service, provider, apiKey);
       setResults(r => ({ ...r, [key]: { status: STATUS.DONE, data } }));
+      saveToDb(service, data.dataFields, provider);
     } catch (err) {
       setResults(r => ({ ...r, [key]: { status: STATUS.ERROR, error: err.message } }));
     }
