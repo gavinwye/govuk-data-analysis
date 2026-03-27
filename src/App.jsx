@@ -1,4 +1,19 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
+
+function loadFromStorage(key, fallback) {
+  try {
+    const stored = localStorage.getItem(key);
+    return stored ? JSON.parse(stored) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* ignore quota errors */ }
+}
 
 const SAMPLE_SERVICES = [
   { name: "Register to vote", url: "https://www.gov.uk/register-to-vote", organisation: "Cabinet Office", topic: "Democracy" },
@@ -350,14 +365,19 @@ function Stat({ label, value, highlight }) {
 }
 
 export default function App() {
-  const [services, setServices] = useState(SAMPLE_SERVICES);
-  const [results, setResults] = useState({});
+  const [services, setServices] = useState(() => loadFromStorage("audit-services", SAMPLE_SERVICES));
+  const [results, setResults] = useState(() => loadFromStorage("audit-results", {}));
   const [newUrl, setNewUrl] = useState("");
   const [newName, setNewName] = useState("");
   const [analysing, setAnalysing] = useState(false);
-  const [view, setView] = useState("services"); // "services" or "overlaps"
-  const [provider, setProvider] = useState("ollama"); // "ollama" or "anthropic"
-  const [apiKey, setApiKey] = useState("");
+  const [view, setView] = useState("services");
+  const [provider, setProvider] = useState(() => loadFromStorage("audit-provider", "ollama"));
+  const [apiKey, setApiKey] = useState(() => loadFromStorage("audit-apikey", ""));
+
+  useEffect(() => { saveToStorage("audit-services", services); }, [services]);
+  useEffect(() => { saveToStorage("audit-results", results); }, [results]);
+  useEffect(() => { saveToStorage("audit-provider", provider); }, [provider]);
+  useEffect(() => { saveToStorage("audit-apikey", apiKey); }, [apiKey]);
 
   const getKey = s => s.url;
 
@@ -467,7 +487,10 @@ export default function App() {
 
         {/* Controls */}
         <div style={{ background: "#fff", border: "1px solid #b1b4b6", padding: "20px", marginBottom: 24 }}>
-          <h2 style={{ margin: "0 0 16px", fontSize: 20, fontWeight: 700, color: "#0b0c0c" }}>Add a service</h2>
+          <h2 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700, color: "#0b0c0c" }}>Add a service</h2>
+          <p style={{ margin: "0 0 16px", fontSize: 14, color: "#505a5f" }}>
+            Find services to audit from the <a href="https://govuk-services-list.x-govuk.org/topic" target="_blank" rel="noopener noreferrer" style={{ color: "#1d70b8" }}>GOV.UK services list</a>
+          </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
             <input
               value={newName}
