@@ -62,12 +62,25 @@ Results are saved to your browser's local storage, so they persist across page r
 
 ## How it works
 
-The tool sends each service's details to the chosen AI model, which returns a structured list of every data field collected during the user journey. Field names are normalised and compared across services to identify overlaps.
+The tool sends each service's name, URL, and organisation to the chosen AI model with a prompt asking it to list every data field collected by that service. The model responds based on its **training knowledge** of what the service collects — it does not visit the URL, scrape the live service, or read the service's actual privacy notice.
+
+The prompt instructs the model to think through every page and step of the user journey and list each field at the most granular level (e.g. "First name", "Postcode", "Sort code" rather than "Name", "Address", "Bank details"). Each field is categorised, marked as required or optional, and tagged with the journey step that collects it.
+
+Field names are then normalised and compared across services to identify overlaps in the "Data overlaps" view.
 
 When using Ollama, all analysis runs locally on your machine. When using Groq or the Anthropic API, service names and URLs are sent to the respective API for analysis.
+
+## Disclaimer
+
+**The analysis is entirely AI-generated.** The tool does not access, scrape, or verify data against the live services. Results are based on what the AI model knows from its training data about each service's data collection practices. This means:
+
+- Results may be incomplete, inaccurate, or out of date
+- Fields listed may not reflect the current live service
+- The tool may miss data fields or include fields that are no longer collected
+- Accuracy varies depending on the AI model used
+
+**Always verify findings against the service's own privacy notice and published forms.** This tool is intended as a starting point for analysis, not a definitive audit. It is not a substitute for a formal Data Protection Impact Assessment (DPIA).
 
 ## Notes
 
 - Analysis quality depends on the model used. The Anthropic API (Claude Sonnet) will produce the most detailed results. Groq (Llama 3.3 70B) is a good free alternative. If using Ollama, larger models (e.g. `gemma3:12b`) will be more accurate than smaller ones.
-- Results are AI-generated based on publicly known service designs. Always verify findings against the service's own privacy notice.
-- This tool is not a substitute for a formal Data Protection Impact Assessment (DPIA).
