@@ -13,6 +13,7 @@ It analyses each service's user journey and lists every individual data field co
 - [Node.js](https://nodejs.org/) v18 or later
 - One of the following AI providers:
   - **Ollama** (free, runs locally) — install from https://ollama.ai/
+  - **Groq** (free tier, cloud) — get an API key at https://console.groq.com/keys
   - **Anthropic API key** — sign up at https://console.anthropic.com/
 
 ### Option 1: Ollama (local, free)
@@ -26,9 +27,13 @@ ollama pull gemma3:4b
 
 3. Make sure Ollama is running (it starts automatically on macOS after install)
 
-### Option 2: Anthropic API
+### Option 2: Groq (cloud, free tier)
 
-No additional setup needed. You'll enter your API key in the app. This uses Claude Sonnet and will produce higher quality results than smaller local models.
+No additional setup needed. Get a free API key at https://console.groq.com/keys and enter it in the app. This uses Gemma 2 9B hosted on Groq's infrastructure.
+
+### Option 3: Anthropic API
+
+No additional setup needed. You'll enter your API key in the app. This uses Claude Sonnet and will produce the highest quality results.
 
 ## Getting started
 

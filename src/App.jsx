@@ -99,8 +99,30 @@ async function analyseWithAnthropic(service, apiKey) {
   return JSON.parse(clean);
 }
 
+async function analyseWithGroq(service, apiKey) {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gemma2-9b-it",
+      messages: [{ role: "user", content: buildPrompt(service) }],
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  const text = data.choices?.[0]?.message?.content || "";
+  const clean = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(clean);
+}
+
 async function analyseService(service, provider, apiKey) {
   if (provider === "anthropic") return analyseWithAnthropic(service, apiKey);
+  if (provider === "groq") return analyseWithGroq(service, apiKey);
   return analyseWithOllama(service);
 }
 
@@ -404,6 +426,10 @@ export default function App() {
               <strong>Ollama</strong> <span style={{ color: "#505a5f" }}>(local, free)</span>
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
+              <input type="radio" name="provider" value="groq" checked={provider === "groq"} onChange={() => setProvider("groq")} />
+              <strong>Groq</strong> <span style={{ color: "#505a5f" }}>(cloud, free tier)</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
               <input type="radio" name="provider" value="anthropic" checked={provider === "anthropic"} onChange={() => setProvider("anthropic")} />
               <strong>Anthropic API</strong> <span style={{ color: "#505a5f" }}>(Claude, requires API key)</span>
             </label>
@@ -411,6 +437,18 @@ export default function App() {
           {provider === "ollama" && (
             <div style={{ fontSize: 13, color: "#505a5f" }}>
               Using gemma3:4b via Ollama on localhost:11434. Make sure Ollama is running.
+            </div>
+          )}
+          {provider === "groq" && (
+            <div>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                placeholder="Groq API key (gsk_...)"
+                style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit", marginBottom: 6 }}
+              />
+              {!apiKey && <div style={{ fontSize: 13, color: "#d4351c" }}>API key required — get a free one at <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#1d70b8" }}>console.groq.com/keys</a></div>}
             </div>
           )}
           {provider === "anthropic" && (
