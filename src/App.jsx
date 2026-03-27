@@ -16,16 +16,20 @@ function saveToStorage(key, value) {
   } catch { /* ignore quota errors */ }
 }
 
-const SAMPLE_SERVICES = [
-  { name: "Register to vote", url: "https://www.gov.uk/register-to-vote", organisation: "Cabinet Office", topic: "Democracy" },
-  { name: "Apply for a passport", url: "https://www.gov.uk/apply-renew-passport", organisation: "HM Passport Office", topic: "Passports, travel and living abroad" },
-  { name: "Check or update your company car tax", url: "https://www.gov.uk/check-company-car-tax-calculator", organisation: "HMRC", topic: "Tax" },
-  { name: "Apply for Universal Credit", url: "https://www.gov.uk/universal-credit/how-to-claim", organisation: "DWP", topic: "Benefits" },
-  { name: "Renew vehicle tax", url: "https://www.gov.uk/renew-vehicle-tax", organisation: "DVLA", topic: "Driving and transport" },
-  { name: "Check your State Pension forecast", url: "https://www.gov.uk/check-state-pension", organisation: "DWP", topic: "Pensions" },
-  { name: "Apply for a DBS check", url: "https://www.gov.uk/request-copy-criminal-record", organisation: "DBS", topic: "Crime and justice" },
-  { name: "Get a divorce", url: "https://www.gov.uk/apply-for-divorce", organisation: "HMCTS", topic: "Family" },
-];
+import servicesData from "../govuk-services.json";
+
+// Build flat services list from JSON, excluding retired services
+const SERVICES_BY_TOPIC = Object.entries(servicesData)
+  .filter(([topic]) => topic !== "Coronavirus (COVID-19)" && topic !== "Disabled people")
+  .map(([topic, services]) => ({
+    topic,
+    services: services
+      .filter(s => !s.tags?.includes("Retired"))
+      .map(s => ({ name: s.name, url: s.url, organisation: "", topic })),
+  }))
+  .filter(g => g.services.length > 0);
+
+const ALL_SERVICES = SERVICES_BY_TOPIC.flatMap(g => g.services);
 
 const STATUS = { IDLE: "idle", LOADING: "loading", DONE: "done", ERROR: "error" };
 
@@ -366,7 +370,7 @@ function Stat({ label, value, highlight }) {
 }
 
 export default function App() {
-  const [services, setServices] = useState(() => loadFromStorage("audit-services", SAMPLE_SERVICES));
+  const [services, setServices] = useState(() => loadFromStorage("audit-services", ALL_SERVICES));
   const [results, setResults] = useState(() => loadFromStorage("audit-results", {}));
   const [newUrl, setNewUrl] = useState("");
   const [newName, setNewName] = useState("");
@@ -602,20 +606,55 @@ export default function App() {
 
         {view === "services" && (
           <div>
-            {services.map(service => {
-              const key = getKey(service);
-              const r = results[key] || { status: STATUS.IDLE };
+            {SERVICES_BY_TOPIC.map(group => {
+              const groupServices = services.filter(s => s.topic === group.topic);
+              if (groupServices.length === 0) return null;
+              const groupDone = groupServices.filter(s => results[getKey(s)]?.status === STATUS.DONE).length;
               return (
-                <ServiceCard
-                  key={key}
-                  service={service}
-                  result={r.data}
-                  status={r.status}
-                  error={r.error}
-                  onAnalyse={analyseOne}
-                />
+                <div key={group.topic} style={{ marginBottom: 32 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, borderBottom: "3px solid #0b0c0c", paddingBottom: 8 }}>
+                    <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#0b0c0c" }}>{group.topic}</h2>
+                    <span style={{ fontSize: 14, color: "#505a5f" }}>{groupDone} / {groupServices.length} analysed</span>
+                  </div>
+                  {groupServices.map(service => {
+                    const key = getKey(service);
+                    const r = results[key] || { status: STATUS.IDLE };
+                    return (
+                      <ServiceCard
+                        key={key}
+                        service={service}
+                        result={r.data}
+                        status={r.status}
+                        error={r.error}
+                        onAnalyse={analyseOne}
+                      />
+                    );
+                  })}
+                </div>
               );
             })}
+            {/* Services added manually (no topic match) */}
+            {services.filter(s => !SERVICES_BY_TOPIC.some(g => g.topic === s.topic)).length > 0 && (
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ borderBottom: "3px solid #0b0c0c", paddingBottom: 8, marginBottom: 12 }}>
+                  <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#0b0c0c" }}>Other services</h2>
+                </div>
+                {services.filter(s => !SERVICES_BY_TOPIC.some(g => g.topic === s.topic)).map(service => {
+                  const key = getKey(service);
+                  const r = results[key] || { status: STATUS.IDLE };
+                  return (
+                    <ServiceCard
+                      key={key}
+                      service={service}
+                      result={r.data}
+                      status={r.status}
+                      error={r.error}
+                      onAnalyse={analyseOne}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
