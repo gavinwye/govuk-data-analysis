@@ -162,7 +162,22 @@ async function analyseWithComputerUse(service, apiKey, backendUrl) {
   return data;
 }
 
+async function analyseWithScraper(service, backendUrl) {
+  const response = await fetch(`${backendUrl}/api/scrape-audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      serviceName: service.name,
+      serviceUrl: service.url,
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
 async function analyseService(service, provider, apiKey, backendUrl) {
+  if (provider === "scraper") return analyseWithScraper(service, backendUrl);
   if (provider === "computer-use") return analyseWithComputerUse(service, apiKey, backendUrl);
   if (provider === "anthropic") return analyseWithAnthropic(service, apiKey);
   if (provider === "groq") return analyseWithGroq(service, apiKey);
@@ -524,6 +539,21 @@ export default function App() {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 24px" }}>
 
+        <div style={{ background: "#fff", border: "1px solid #b1b4b6", borderLeft: "4px solid #1d70b8", padding: "20px", marginBottom: 24 }}>
+          <h1 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 700, color: "#0b0c0c" }}>What this tool does</h1>
+          <p style={{ margin: "0 0 8px", fontSize: 15, color: "#0b0c0c", lineHeight: 1.5 }}>
+            This tool audits GOV.UK services to work out exactly what personal data each one collects from users —
+            down to individual fields like "National Insurance number" or "Sort code", not just broad categories like "financial details".
+          </p>
+          <p style={{ margin: 0, fontSize: 15, color: "#0b0c0c", lineHeight: 1.5 }}>
+            Pick a service below, run an analysis (using a live browser scraper, Computer Use, or an AI model),
+            and the tool builds a field-by-field breakdown of what's collected and why. Once you've analysed
+            several services, switch to the <strong>Data overlaps</strong> view to see which data fields are being
+            collected repeatedly across different services — useful for spotting duplication and opportunities to
+            reuse data users have already given government once.
+          </p>
+        </div>
+
         <SummaryBar services={services} results={results} />
 
         {/* AI provider settings */}
@@ -541,6 +571,10 @@ export default function App() {
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
               <input type="radio" name="provider" value="anthropic" checked={provider === "anthropic"} onChange={() => setProvider("anthropic")} />
               <strong>Anthropic API</strong> <span style={{ color: "#505a5f" }}>(Claude, requires API key)</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
+              <input type="radio" name="provider" value="scraper" checked={provider === "scraper"} onChange={() => setProvider("scraper")} />
+              <strong>Live scraper</strong> <span style={{ color: "#505a5f" }}>(navigates live service, free, no API key)</span>
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, cursor: "pointer" }}>
               <input type="radio" name="provider" value="computer-use" checked={provider === "computer-use"} onChange={() => setProvider("computer-use")} />
@@ -574,6 +608,20 @@ export default function App() {
                 style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit" }}
               />
               {!apiKey && <div style={{ fontSize: 13, color: "#d4351c", marginTop: 6 }}>API key required</div>}
+            </div>
+          )}
+          {provider === "scraper" && (
+            <div>
+              <input
+                type="text"
+                value={backendUrl}
+                onChange={e => setBackendUrl(e.target.value)}
+                placeholder="Backend server URL"
+                style={{ width: "100%", maxWidth: 500, padding: "8px 12px", border: "2px solid #0b0c0c", fontSize: 14, fontFamily: "inherit", marginBottom: 6 }}
+              />
+              <div style={{ fontSize: 13, color: "#505a5f" }}>
+                Navigates the live service using a headless browser, reads form fields directly from the page HTML. Free — no API key needed. Each service takes 10-60 seconds.
+              </div>
             </div>
           )}
           {provider === "computer-use" && (
