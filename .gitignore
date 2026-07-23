@@ -2,5 +2,6 @@ node_modules
 dist
 .DS_Store
 .env
+LOCAL-NOTES.md
 server/node_modules
 server/npm-debug.log

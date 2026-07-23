@@ -1,9 +1,19 @@
 import { chromium } from "playwright";
 
-const VIEWPORT = { width: 1280, height: 800 };
+const VIEWPORT = { width: 1024, height: 768 };
 
 export async function launchBrowser() {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--single-process",
+    ],
+  });
   const context = await browser.newContext({
     viewport: VIEWPORT,
     userAgent:
@@ -18,10 +28,12 @@ export async function takeScreenshot(page) {
   return buffer.toString("base64");
 }
 
-export async function executeAction(page, action) {
-  const { type, coordinate, text, key } = action;
+export const SCREENSHOT_MEDIA_TYPE = "image/png";
 
-  switch (type) {
+export async function executeAction(page, input) {
+  const { action, coordinate, text, key } = input;
+
+  switch (action) {
     case "screenshot":
       return await takeScreenshot(page);
 
@@ -57,8 +69,8 @@ export async function executeAction(page, action) {
       break;
 
     case "left_click_drag":
-      if (action.start_coordinate && coordinate) {
-        await page.mouse.move(action.start_coordinate[0], action.start_coordinate[1]);
+      if (input.start_coordinate && coordinate) {
+        await page.mouse.move(input.start_coordinate[0], input.start_coordinate[1]);
         await page.mouse.down();
         await page.mouse.move(coordinate[0], coordinate[1]);
         await page.mouse.up();
@@ -93,17 +105,17 @@ export async function executeAction(page, action) {
       break;
 
     case "scroll":
-      if (coordinate && action.scroll_direction) {
+      if (coordinate && input.scroll_direction) {
         await page.mouse.move(coordinate[0], coordinate[1]);
-        const delta = action.scroll_amount || 3;
+        const delta = input.scroll_amount || 3;
         const pixels = delta * 100;
-        if (action.scroll_direction === "down") {
+        if (input.scroll_direction === "down") {
           await page.mouse.wheel(0, pixels);
-        } else if (action.scroll_direction === "up") {
+        } else if (input.scroll_direction === "up") {
           await page.mouse.wheel(0, -pixels);
-        } else if (action.scroll_direction === "left") {
+        } else if (input.scroll_direction === "left") {
           await page.mouse.wheel(-pixels, 0);
-        } else if (action.scroll_direction === "right") {
+        } else if (input.scroll_direction === "right") {
           await page.mouse.wheel(pixels, 0);
         }
       }
@@ -118,11 +130,11 @@ export async function executeAction(page, action) {
       break;
 
     default:
-      console.warn(`Unknown action type: ${type}`);
+      console.warn(`Unknown action type: ${action}`);
   }
 
   // After any action (except screenshot), wait for potential navigation/loading
-  if (type !== "screenshot" && type !== "wait") {
+  if (action !== "screenshot" && action !== "wait") {
     try {
       await page.waitForLoadState("domcontentloaded", { timeout: 3000 });
     } catch {
