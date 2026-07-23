@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { executeAction, takeScreenshot, VIEWPORT } from "./browser.js";
+import { executeAction, takeScreenshot, VIEWPORT, SCREENSHOT_MEDIA_TYPE } from "./browser.js";
 
 const SYSTEM_PROMPT = `You are auditing a GOV.UK government service to catalogue every data field it collects from users.
 
@@ -72,7 +72,7 @@ export async function runAgentLoop(page, serviceUrl, apiKey, onProgress) {
           type: "image",
           source: {
             type: "base64",
-            media_type: "image/png",
+            media_type: SCREENSHOT_MEDIA_TYPE,
             data: initialScreenshot,
           },
         },
@@ -102,14 +102,27 @@ export async function runAgentLoop(page, serviceUrl, apiKey, onProgress) {
 
     console.log(`[agent-loop] Iteration ${iterations}/${MAX_ITERATIONS}`);
 
-    const response = await client.beta.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages,
-      tools,
-      betas: ["computer-use-2025-01-24"],
-    });
+    let response;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await client.beta.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4096,
+          system: SYSTEM_PROMPT,
+          messages,
+          tools,
+          betas: ["computer-use-2025-01-24"],
+        });
+        break;
+      } catch (err) {
+        if (err.status === 429 && attempt < 2) {
+          console.log(`[agent-loop] Rate limited, waiting 60s before retry (attempt ${attempt + 1}/3)`);
+          await new Promise((r) => setTimeout(r, 60000));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     // Check if the response contains just text (final answer)
     const hasToolUse = response.content.some((block) => block.type === "tool_use");
@@ -141,7 +154,7 @@ export async function runAgentLoop(page, serviceUrl, apiKey, onProgress) {
               type: "image",
               source: {
                 type: "base64",
-                media_type: "image/png",
+                media_type: SCREENSHOT_MEDIA_TYPE,
                 data: screenshot,
               },
             },

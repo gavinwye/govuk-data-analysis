@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { launchBrowser } from "./browser.js";
 import { runAgentLoop } from "./agent-loop.js";
+import { scrapeService } from "./scraper.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -67,7 +68,51 @@ app.post("/api/computer-use-audit", async (req, res) => {
   }
 });
 
+// URL validation helper
+function validateServiceUrl(serviceUrl) {
+  const parsed = new URL(serviceUrl);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return "Only http/https URLs are allowed";
+  }
+  if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(parsed.hostname)) {
+    return "Local URLs are not allowed";
+  }
+  return null;
+}
+
+// Scraper audit endpoint (free, no API key needed)
+app.post("/api/scrape-audit", async (req, res) => {
+  const { serviceName, serviceUrl } = req.body;
+
+  if (!serviceUrl) {
+    return res.status(400).json({ error: "serviceUrl is required" });
+  }
+
+  try {
+    const urlError = validateServiceUrl(serviceUrl);
+    if (urlError) return res.status(400).json({ error: urlError });
+  } catch {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+
+  console.log(`\n[scrape] Starting scrape of: ${serviceName || serviceUrl}`);
+  console.log(`[scrape] URL: ${serviceUrl}`);
+
+  try {
+    const result = await scrapeService(serviceUrl, (progress) => {
+      console.log(`[scrape] Page ${progress.page}: "${progress.heading}"`);
+    });
+
+    console.log(`[scrape] Completed: found ${result.dataFields?.length || 0} data fields`);
+    res.json(result);
+  } catch (err) {
+    console.error(`[scrape] Error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\nGOV.UK Audit Server running on http://localhost:${PORT}`);
-  console.log(`POST /api/computer-use-audit to audit a service\n`);
+  console.log(`POST /api/computer-use-audit to audit a service (requires API key)`);
+  console.log(`POST /api/scrape-audit to scrape a service (free, no API key)\n`);
 });
