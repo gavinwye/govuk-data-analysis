@@ -14,6 +14,16 @@ async function extractFields(page, stepName) {
   return await page.evaluate((step) => {
     const fields = [];
     let idxCounter = 0;
+    // Hint text for a field or group, if the service gives one.
+    const hintOf = (el) => {
+      const g = el.closest(".govuk-form-group, fieldset");
+      const h = g && g.querySelector(".govuk-hint");
+      return h ? h.textContent.replace(/\s+/g, " ").trim() : null;
+    };
+    const labelFor = (el) => {
+      const l = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      return l ? l.textContent.replace(/\s+/g, " ").trim() : (el.value || "").trim();
+    };
     // Stable selector even when the element has no id.
     const sel = (el) => {
       if (el.id) return `#${CSS.escape(el.id)}`;
@@ -74,6 +84,11 @@ async function extractFields(page, stepName) {
         label: label,
         type: input.tagName.toLowerCase() === "select" ? "select" : input.type || "text",
         numeric: input.getAttribute("inputmode") === "numeric",
+        hint: hintOf(input),
+        options:
+          input.tagName.toLowerCase() === "select"
+            ? Array.from(input.options).map((o) => o.textContent.trim()).filter(Boolean)
+            : null,
         required: input.hasAttribute("required") || input.getAttribute("aria-required") === "true",
         selector: sel(input),
         step: step,
@@ -94,6 +109,8 @@ async function extractFields(page, stepName) {
       fields.push({
         label: label,
         type: "radio",
+        hint: hintOf(radios[0]),
+        options: Array.from(radios).map(labelFor).filter(Boolean),
         required: radios[0].hasAttribute("required"),
         selector: sel(radios[0]),
         step: step,
@@ -104,6 +121,25 @@ async function extractFields(page, stepName) {
     const checkboxes = document.querySelectorAll('input[type="checkbox"]');
     for (const cb of checkboxes) {
       if (cb.offsetParent === null) continue;
+      const group = cb.closest("fieldset");
+      const boxes = group ? Array.from(group.querySelectorAll('input[type="checkbox"]')) : [];
+      const legend = group ? group.querySelector("legend") : null;
+      if (boxes.length >= 2 && legend) {
+        // A "select all that apply" group: one field, many options.
+        const groupLabel = legend.textContent.replace(/\s+/g, " ").trim();
+        if (!groupLabel || seenLabels.has(groupLabel)) continue;
+        seenLabels.add(groupLabel);
+        fields.push({
+          label: groupLabel,
+          type: "checkbox",
+          required: false,
+          selector: sel(cb),
+          hint: hintOf(cb),
+          options: boxes.map(labelFor).filter(Boolean),
+          step: step,
+        });
+        continue;
+      }
       const label = getLabelText(cb);
       if (!label || seenLabels.has(label)) continue;
       seenLabels.add(label);
@@ -113,6 +149,8 @@ async function extractFields(page, stepName) {
         type: "checkbox",
         required: cb.hasAttribute("required"),
         selector: sel(cb),
+        hint: hintOf(cb),
+        options: null,
         step: step,
       });
     }
@@ -445,6 +483,16 @@ async function isAuthPage(page) {
   });
 }
 
+// Maps why a run stopped to how much of the journey we can claim to have seen.
+// "Not reached" must never read as "not collected".
+function coverageFor(stopReason, pages) {
+  if (stopReason === "end-page") return "complete";
+  if (stopReason === "auth") return "blocked-auth";
+  if (stopReason.startsWith("contact-form")) return "blocked-contact-form";
+  if (!pages.some((p) => p.fields.length > 0)) return "no-form";
+  return "partial";
+}
+
 /**
  * Main scraper function - navigates a GOV.UK service and extracts all form fields
  */
@@ -546,7 +594,14 @@ export async function scrapeService(serviceUrl, onProgress) {
       if (pageNum === 0) serviceHost = new URL(currentUrl).hostname;
       visited.add(currentUrl.split("#")[0]);
       pagesVisited++;
-      pages.push({ heading, url: currentUrl });
+      pages.push({
+        position: pages.length + 1,
+        heading,
+        url: currentUrl,
+        urlPath: new URL(currentUrl).pathname,
+        kind: "question",
+        fields: [],
+      });
 
       console.log(`[scraper] Page ${pageNum + 1}: "${heading}" (${currentUrl})`);
 
@@ -558,6 +613,7 @@ export async function scrapeService(serviceUrl, onProgress) {
       if (await isAuthPage(page)) {
         console.log("[scraper] Hit authentication page, stopping");
         notes = "Requires authentication (GOV.UK One Login or Government Gateway). Could not navigate past the login page.";
+        pages[pages.length - 1].kind = "auth";
         stopReason = "auth";
         break;
       }
@@ -565,6 +621,7 @@ export async function scrapeService(serviceUrl, onProgress) {
       // Check if we've reached the end
       if (pageNum > 0 && (isStopHeading(heading) || (await isEndPage(page)))) {
         console.log("[scraper] Reached end page");
+        pages[pages.length - 1].kind = /check your answer|review/i.test(heading) ? "check-answers" : "confirmation";
         stopReason = "end-page";
         break;
       }
@@ -591,10 +648,23 @@ export async function scrapeService(serviceUrl, onProgress) {
         allFields.push(field);
       }
 
+      // Keep what this page asked, exactly as scraped, for the structured output.
+      pages[pages.length - 1].fields = pageFields
+        .filter((f) => !["day", "month", "year"].includes(f.label.toLowerCase()) || f.isDateGroup)
+        .map((f, i) => ({
+          position: i + 1,
+          label: f.label.replace(/\s*\(optional\)\s*$/i, ""),
+          hint: f.hint || null,
+          inputType: f.type,
+          required: !/\(optional\)/i.test(f.label),
+          options: f.options || null,
+        }));
+
       // A page that collects identity + contact details is where a journey
       // sends data to a real department. Keep the fields, never press the button.
       if (looksLikeContactForm(pageFields)) {
         console.log("[scraper] Contact-details form, recording fields and stopping before submit");
+        pages[pages.length - 1].kind = "contact";
         stopReason = "contact-form (not submitted)";
         break;
       }
@@ -614,6 +684,7 @@ export async function scrapeService(serviceUrl, onProgress) {
         const chosen = await clickChoiceLink(page, serviceHost, visited);
         if (chosen) {
           console.log(`[scraper] Followed choice link "${chosen}"`);
+          pages[pages.length - 1].kind = "choice";
           continue;
         }
       }
@@ -656,6 +727,8 @@ export async function scrapeService(serviceUrl, onProgress) {
 
   return {
     dataFields: uniqueFields,
+    schemaVersion: 1,
+    coverage: coverageFor(stopReason, pages),
     pages,
     stopReason,
     notes: notes || `Scraped ${pagesVisited} pages`,
