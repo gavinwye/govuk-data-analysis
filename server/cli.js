@@ -8,11 +8,18 @@
 //
 // Options: --out <dir> (default ./scrape-output), --services <file> (default ../govuk-services.json)
 import fs from "node:fs";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scrapeService } from "./scraper.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+// Which scraper produced a run, so runs stay comparable.
+let scraperVersion = "unknown";
+try {
+  scraperVersion = execSync("git rev-parse --short HEAD", { cwd: here }).toString().trim();
+} catch {}
 
 function parseArgs(argv) {
   const a = { names: [], urls: [], out: "scrape-output", services: path.join(here, "..", "govuk-services.json") };
@@ -57,9 +64,9 @@ for (const t of targets) {
   console.log(`\n=== ${t.name} ===`);
   const started = new Date().toISOString();
   const result = await scrapeService(t.url, () => {});
-  const record = { name: t.name, url: t.url, topic: t.topic || null, scrapedAt: started, ...result };
+  const record = { name: t.name, url: t.url, topic: t.topic || null, scrapedAt: started, scraperVersion, ...result };
   fs.writeFileSync(path.join(args.out, `${slug(t.name)}.json`), JSON.stringify(record, null, 2));
-  summary.push({ name: t.name, fields: result.dataFields.length, pages: result.pages.length, stopReason: result.stopReason });
+  summary.push({ name: t.name, fields: result.dataFields.length, pages: result.pages.length, coverage: result.coverage, stopReason: result.stopReason });
 }
 fs.writeFileSync(path.join(args.out, "_summary.json"), JSON.stringify(summary, null, 2));
 console.table(summary);
