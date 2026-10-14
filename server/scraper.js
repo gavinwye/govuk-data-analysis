@@ -1,5 +1,9 @@
 import { launchBrowser } from "./browser.js";
 import { getTestValue, categoriseField } from "./field-filler.js";
+import { isDangerousLabel, isStopHeading, isProgressLabel, looksLikeContactForm, getControlLabel } from "./safety.js";
+
+// SCRAPE_DRY_RUN=1: follow links and "Start now" only, never press a form button.
+const DRY_RUN = process.env.SCRAPE_DRY_RUN === "1";
 
 const MAX_PAGES = 40;
 
@@ -9,6 +13,14 @@ const MAX_PAGES = 40;
 async function extractFields(page, stepName) {
   return await page.evaluate((step) => {
     const fields = [];
+    let idxCounter = 0;
+    // Stable selector even when the element has no id.
+    const sel = (el) => {
+      if (el.id) return `#${CSS.escape(el.id)}`;
+      idxCounter += 1;
+      el.setAttribute("data-scrape-idx", String(idxCounter));
+      return `[data-scrape-idx="${idxCounter}"]`;
+    };
 
     // Helper to get label text for an input
     function getLabelText(el) {
@@ -61,8 +73,9 @@ async function extractFields(page, stepName) {
       fields.push({
         label: label,
         type: input.tagName.toLowerCase() === "select" ? "select" : input.type || "text",
+        numeric: input.getAttribute("inputmode") === "numeric",
         required: input.hasAttribute("required") || input.getAttribute("aria-required") === "true",
-        selector: input.id ? `#${input.id}` : null,
+        selector: sel(input),
         step: step,
       });
     }
@@ -82,7 +95,7 @@ async function extractFields(page, stepName) {
         label: label,
         type: "radio",
         required: radios[0].hasAttribute("required"),
-        selector: radios[0].id ? `#${radios[0].id}` : null,
+        selector: sel(radios[0]),
         step: step,
       });
     }
@@ -99,7 +112,7 @@ async function extractFields(page, stepName) {
         label: label,
         type: "checkbox",
         required: cb.hasAttribute("required"),
-        selector: cb.id ? `#${cb.id}` : null,
+        selector: sel(cb),
         step: step,
       });
     }
@@ -116,7 +129,7 @@ async function extractFields(page, stepName) {
         label: label,
         type: "file",
         required: fi.hasAttribute("required"),
-        selector: fi.id ? `#${fi.id}` : null,
+        selector: sel(fi),
         step: step,
       });
     }
@@ -156,7 +169,11 @@ async function extractFields(page, stepName) {
  */
 async function getPageHeading(page) {
   return await page.evaluate(() => {
-    const h1 = document.querySelector("h1, .govuk-heading-l, .govuk-heading-xl, .govuk-fieldset__heading");
+    // Prefer a visible heading inside <main>, skipping timeout/cookie dialogs.
+    const candidates = Array.from(
+      document.querySelectorAll("main h1, h1, .govuk-heading-l, .govuk-heading-xl, .govuk-fieldset__heading")
+    ).filter((h) => h.offsetParent !== null && !h.closest('dialog, [role="dialog"], [aria-modal="true"], [hidden]'));
+    const h1 = candidates[0];
     return h1 ? h1.textContent.trim() : document.title || "Unknown page";
   });
 }
@@ -164,13 +181,44 @@ async function getPageHeading(page) {
 /**
  * Fill in form fields with test data
  */
-async function fillFields(page, fields, pageContext) {
+const NUMBER_VALUES = ["2", "1", "10", "35000"];
+const TEXT_VALUES = [null, "Jane Smith", "ABC123", "10 Downing Street"];
+
+const NUMERIC_LABEL = /\b(how many|number of|total number|how much|how old|age)\b/i;
+
+function valueFor(field, pageContext, attempt) {
+  if (field.type === "number" || field.numeric || NUMERIC_LABEL.test(field.label)) {
+    const v = getTestValue(field.label, pageContext);
+    return attempt === 0 && /^\d+$/.test(v) ? v : NUMBER_VALUES[attempt % NUMBER_VALUES.length];
+  }
+  if (field.type === "email") return "jane.smith@example.com";
+  if (field.type === "tel") return "07700 900000";
+  if (field.type === "url") return "https://example.com";
+  const v = getTestValue(field.label, pageContext);
+  // A recognised field (name, email, postcode...) keeps its value on retries;
+  // only generic free-text fields rotate through alternatives.
+  if (attempt === 0 || v !== "Test") return v;
+  return TEXT_VALUES[attempt % TEXT_VALUES.length] ?? v;
+}
+
+async function fillFields(page, fields, pageContext, attempt = 0) {
   for (const field of fields) {
     try {
       if (field.type === "radio") {
         // Click the first radio button in the group
         if (field.selector) {
-          await page.click(field.selector);
+          // On retries pick a different option in the group, in case the
+          // first one leads to a validation error or a dead end.
+          const radioName = await page.$eval(field.selector, (el) => el.name).catch(() => "");
+          const group = radioName ? await page.$$(`input[type="radio"][name="${radioName}"]`) : [];
+          const pick = group.length ? group[attempt % group.length] : null;
+          if (pick) {
+            // GOV.UK radios are visually hidden; fall back to clicking the label.
+            await pick.check({ force: true, timeout: 3000 }).catch(async () => {
+              const id = await pick.getAttribute("id");
+              if (id) await page.click(`label[for="${id}"]`, { timeout: 3000 });
+            });
+          } else await page.click(field.selector);
         } else {
           // Try to find first radio in the fieldset
           const radio = await page.$('fieldset input[type="radio"]');
@@ -209,8 +257,7 @@ async function fillFields(page, fields, pageContext) {
       } else {
         // Text-like input
         if (field.selector) {
-          const value = getTestValue(field.label, pageContext);
-          await page.fill(field.selector, value);
+          await page.fill(field.selector, valueFor(field, pageContext, attempt));
         }
       }
     } catch (err) {
@@ -219,87 +266,100 @@ async function fillFields(page, fields, pageContext) {
   }
 }
 
+async function getErrorSummary(page) {
+  return await page.evaluate(() => {
+    const el = document.querySelector(".govuk-error-summary, [role='alert'] .govuk-error-message, .govuk-error-message");
+    return el ? el.textContent.replace(/\s+/g, " ").trim().slice(0, 160) : "";
+  });
+}
+
 /**
- * Try to click the continue/next/submit button
- * Returns true if navigation happened
+ * Try to click the continue/next button.
+ * Never clicks a button whose label submits, sends, pays or declares.
+ * Returns { navigated: boolean, blocked?: string } where blocked is the label
+ * of the dangerous button we refused to press.
  */
 // Selector fragment that excludes cookie/consent banner buttons, which also use
 // GOV.UK button classes and otherwise get clicked instead of the real form submit.
 const NOT_COOKIE_BANNER = ':not([class*="cookie" i] *):not([id*="cookie" i] *)';
 
-async function clickContinue(page) {
+async function clickContinue(page, serviceHost) {
+  // Only look inside the main content so header, footer, breadcrumbs, phase
+  // banners and cookie banners can never be mistaken for the journey button.
+  const IN_MAIN = (await page.$("main")) ? "main " : "";
   const buttonSelectors = [
-    // GOV.UK primary button, scoped to a <form> so cookie/consent banner
-    // buttons (which sit outside any form) can never match first.
-    `form button.govuk-button:not(.govuk-button--secondary):not(.govuk-button--warning)${NOT_COOKIE_BANNER}`,
-    `form input[type="submit"]${NOT_COOKIE_BANNER}`,
-    // Generic submit, still excluding cookie banners
-    `button[type="submit"]${NOT_COOKIE_BANNER}`,
-    `input[type="submit"]${NOT_COOKIE_BANNER}`,
-    // Fall back to any primary button, still excluding cookie banners
-    `button.govuk-button:not(.govuk-button--secondary):not(.govuk-button--warning)${NOT_COOKIE_BANNER}`,
-    // Links styled as buttons
-    `a.govuk-button:not(.govuk-button--secondary)${NOT_COOKIE_BANNER}`,
-    // Start button
-    `a.govuk-button--start${NOT_COOKIE_BANNER}`,
+    `${IN_MAIN}form button.govuk-button:not(.govuk-button--secondary):not(.govuk-button--warning)`,
+    `${IN_MAIN}form input[type="submit"]`,
+    `${IN_MAIN}button[type="submit"]`,
+    `${IN_MAIN}input[type="submit"]`,
+    `${IN_MAIN}button.govuk-button:not(.govuk-button--secondary):not(.govuk-button--warning)`,
+    `${IN_MAIN}a.govuk-button:not(.govuk-button--secondary)`,
+    `${IN_MAIN}a.govuk-button--start`,
   ];
 
-  const buttonTexts = [
-    "start now",
-    "continue",
-    "next",
-    "submit",
-    "save and continue",
-    "agree and continue",
-    "accept and continue",
-    "send",
-    "apply",
-    "confirm",
-    "save and come back later",
-  ];
+  const buttonTexts = ["start now", "continue", "next", "save and continue", "agree and continue", "accept and continue", "apply"];
+  const textSelectors = buttonTexts.map((t) => `${IN_MAIN}button:has-text("${t}"), ${IN_MAIN}a.govuk-button:has-text("${t}")`);
 
-  // Try specific GOV.UK button selectors first
-  for (const selector of buttonSelectors) {
+  for (const selector of [...buttonSelectors, ...textSelectors]) {
     const button = await page.$(selector);
-    if (button) {
-      const isVisible = await button.isVisible();
-      if (isVisible) {
-        const urlBefore = page.url();
-        await button.click();
-        await page.waitForTimeout(1500);
-        try {
-          await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
-        } catch {}
-        // Check if we navigated
-        if (page.url() !== urlBefore || (await hasNewContent(page))) {
-          return true;
-        }
-      }
+    if (!button || !(await button.isVisible())) continue;
+
+    const label = await getControlLabel(button);
+    if (isDangerousLabel(label) || !isProgressLabel(label)) return { navigated: false, blocked: label };
+    if (DRY_RUN && !/^start/i.test(label.replace(/^[^a-z]+/i, ""))) {
+      return { navigated: false, blocked: `dry-run (would press "${label}")` };
+    }
+
+    // Never follow a button-styled link off the service (e.g. "Return to GOV.UK").
+    const href = await button.evaluate((el) => (el.tagName === "A" ? el.href : null));
+    if (href && !isSameService(href, serviceHost)) continue;
+
+    const urlBefore = page.url();
+    await button.click();
+    await page.waitForTimeout(1500);
+    try {
+      await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
+    } catch {}
+    if (page.url() !== urlBefore || (await hasNewContent(page))) {
+      return { navigated: true };
     }
   }
+  return { navigated: false };
+}
 
-  // Try finding button by text, excluding cookie/consent banners
-  for (const text of buttonTexts) {
-    const button = await page.$(
-      `button:has-text("${text}")${NOT_COOKIE_BANNER}, a:has-text("${text}")${NOT_COOKIE_BANNER}`
-    );
-    if (button) {
-      const isVisible = await button.isVisible();
-      if (isVisible) {
-        const urlBefore = page.url();
-        await button.click();
-        await page.waitForTimeout(1500);
-        try {
-          await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
-        } catch {}
-        if (page.url() !== urlBefore || (await hasNewContent(page))) {
-          return true;
-        }
-      }
-    }
+function isSameService(href, serviceHost) {
+  try {
+    const u = new URL(href);
+    return ["http:", "https:"].includes(u.protocol) && (!serviceHost || u.hostname === serviceHost);
+  } catch {
+    return false;
   }
+}
 
-  return false;
+// Pages that are a list of choices (links) rather than a form: follow the first
+// unvisited link that stays on the service. Returns the link label or null.
+async function clickChoiceLink(page, serviceHost, visited) {
+  const candidates = await page.$$eval(
+    "main a[href]:not(.govuk-back-link):not(.govuk-button)",
+    (links) =>
+      links
+        .filter((a) => a.offsetParent !== null && !a.closest("nav, footer, header, .govuk-breadcrumbs"))
+        .map((a) => ({ href: a.href, label: a.textContent.trim() }))
+  );
+  const skip = /^(back|return|start again|search again|cookies|privacy|accessibility|feedback|contact|help|sign in|log in)\b/i;
+  for (const c of candidates) {
+    if (!c.label || skip.test(c.label) || isDangerousLabel(c.label)) continue;
+    if (!isSameService(c.href, serviceHost) || visited.has(c.href.split("#")[0])) continue;
+    const link = await page.$(`main a[href="${new URL(c.href).pathname + new URL(c.href).search}"], main a[href="${c.href}"]`);
+    if (!link) continue;
+    await link.click();
+    await page.waitForTimeout(1500);
+    try {
+      await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
+    } catch {}
+    return c.label;
+  }
+  return null;
 }
 
 /**
@@ -394,6 +454,8 @@ export async function scrapeService(serviceUrl, onProgress) {
   let pagesVisited = 0;
   let lastSignature = null;
   let notes = "";
+  let stopReason = "unknown";
+  const pages = [];
 
   try {
     console.log(`[scraper] Navigating to ${serviceUrl}`);
@@ -436,7 +498,8 @@ export async function scrapeService(serviceUrl, onProgress) {
     await dismissCookieBanner(page);
 
     // If we're on a GOV.UK start page, click "Start now"
-    const startButton = await page.$('a.govuk-button--start, a:has-text("Start now")');
+    let startButton = await page.$('a.govuk-button--start, a:has-text("Start now")');
+    if (startButton && !isProgressLabel(await getControlLabel(startButton))) startButton = null;
     if (startButton) {
       console.log("[scraper] Found 'Start now' button, clicking");
       await startButton.click();
@@ -448,6 +511,10 @@ export async function scrapeService(serviceUrl, onProgress) {
 
     await dismissCookieBanner(page);
 
+    stopReason = "max-pages";
+    let serviceHost = null;
+    let attempt = 0;
+    const visited = new Set();
     for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
       const currentUrl = page.url();
       const heading = await getPageHeading(page);
@@ -456,11 +523,30 @@ export async function scrapeService(serviceUrl, onProgress) {
       // state machine), so detect stalls by URL+heading rather than URL alone.
       const signature = `${currentUrl}::${heading}`;
       if (signature === lastSignature) {
+        const errText = await getErrorSummary(page);
+        if (errText && attempt < 3) {
+          // Validation error: re-fill with different values and try again.
+          attempt++;
+          console.log(`[scraper] Validation error ("${errText}"), retry ${attempt}`);
+          const retryFields = await extractFields(page, heading);
+          await fillFields(page, retryFields, heading, attempt);
+          const retry = await clickContinue(page, serviceHost);
+          if (retry.blocked) {
+            stopReason = `blocked: ${retry.blocked}`;
+            break;
+          }
+          continue;
+        }
         console.log(`[scraper] No change since last page ("${heading}"), stopping`);
+        stopReason = errText ? `validation-error: ${errText}` : "no-change";
         break;
       }
+      attempt = 0;
       lastSignature = signature;
+      if (pageNum === 0) serviceHost = new URL(currentUrl).hostname;
+      visited.add(currentUrl.split("#")[0]);
       pagesVisited++;
+      pages.push({ heading, url: currentUrl });
 
       console.log(`[scraper] Page ${pageNum + 1}: "${heading}" (${currentUrl})`);
 
@@ -472,12 +558,14 @@ export async function scrapeService(serviceUrl, onProgress) {
       if (await isAuthPage(page)) {
         console.log("[scraper] Hit authentication page, stopping");
         notes = "Requires authentication (GOV.UK One Login or Government Gateway). Could not navigate past the login page.";
+        stopReason = "auth";
         break;
       }
 
       // Check if we've reached the end
-      if (pageNum > 0 && (await isEndPage(page))) {
+      if (pageNum > 0 && (isStopHeading(heading) || (await isEndPage(page)))) {
         console.log("[scraper] Reached end page");
+        stopReason = "end-page";
         break;
       }
 
@@ -503,13 +591,35 @@ export async function scrapeService(serviceUrl, onProgress) {
         allFields.push(field);
       }
 
+      // A page that collects identity + contact details is where a journey
+      // sends data to a real department. Keep the fields, never press the button.
+      if (looksLikeContactForm(pageFields)) {
+        console.log("[scraper] Contact-details form, recording fields and stopping before submit");
+        stopReason = "contact-form (not submitted)";
+        break;
+      }
+
       // Fill in the form
       await fillFields(page, pageFields, heading);
 
       // Try to navigate to next page
-      const navigated = await clickContinue(page);
-      if (!navigated) {
+      const result = await clickContinue(page, serviceHost);
+      if (result.blocked) {
+        console.log(`[scraper] Refused to press "${result.blocked}", stopping`);
+        stopReason = `blocked: ${result.blocked}`;
+        break;
+      }
+      if (!result.navigated && pageFields.length === 0) {
+        // A list of choices rather than a form: follow the first link that stays on the service.
+        const chosen = await clickChoiceLink(page, serviceHost, visited);
+        if (chosen) {
+          console.log(`[scraper] Followed choice link "${chosen}"`);
+          continue;
+        }
+      }
+      if (!result.navigated) {
         console.log("[scraper] Could not find a continue button, stopping");
+        stopReason = "no-continue";
         break;
       }
 
@@ -519,15 +629,17 @@ export async function scrapeService(serviceUrl, onProgress) {
   } catch (err) {
     console.error(`[scraper] Error: ${err.message}`);
     notes = `Scraper error: ${err.message}`;
+    stopReason = "error";
   } finally {
     await browser.close().catch(() => {});
   }
 
   // Convert to the standard dataFields format
+  // GOV.UK convention: fields are required unless the label says "(optional)".
   const dataFields = allFields.map((f) => ({
-    field: f.label,
+    field: f.label.replace(/\s*\(optional\)\s*$/i, ""),
     category: categoriseField(f.label),
-    required: f.required || false,
+    required: !/\(optional\)/i.test(f.label),
     step: f.step,
   }));
 
@@ -544,6 +656,8 @@ export async function scrapeService(serviceUrl, onProgress) {
 
   return {
     dataFields: uniqueFields,
+    pages,
+    stopReason,
     notes: notes || `Scraped ${pagesVisited} pages`,
   };
 }
