@@ -1,5 +1,6 @@
 import { launchBrowser } from "./browser.js";
 import { getTestValue, categoriseField } from "./field-filler.js";
+import { isDangerousLabel, isStopHeading, getControlLabel } from "./safety.js";
 
 const MAX_PAGES = 40;
 
@@ -220,8 +221,10 @@ async function fillFields(page, fields, pageContext) {
 }
 
 /**
- * Try to click the continue/next/submit button
- * Returns true if navigation happened
+ * Try to click the continue/next button.
+ * Never clicks a button whose label submits, sends, pays or declares.
+ * Returns { navigated: boolean, blocked?: string } where blocked is the label
+ * of the dangerous button we refused to press.
  */
 // Selector fragment that excludes cookie/consent banner buttons, which also use
 // GOV.UK button classes and otherwise get clicked instead of the real form submit.
@@ -248,14 +251,10 @@ async function clickContinue(page) {
     "start now",
     "continue",
     "next",
-    "submit",
     "save and continue",
     "agree and continue",
     "accept and continue",
-    "send",
     "apply",
-    "confirm",
-    "save and come back later",
   ];
 
   // Try specific GOV.UK button selectors first
@@ -264,6 +263,8 @@ async function clickContinue(page) {
     if (button) {
       const isVisible = await button.isVisible();
       if (isVisible) {
+        const label = await getControlLabel(button);
+        if (isDangerousLabel(label)) return { navigated: false, blocked: label };
         const urlBefore = page.url();
         await button.click();
         await page.waitForTimeout(1500);
@@ -272,7 +273,7 @@ async function clickContinue(page) {
         } catch {}
         // Check if we navigated
         if (page.url() !== urlBefore || (await hasNewContent(page))) {
-          return true;
+          return { navigated: true };
         }
       }
     }
@@ -286,6 +287,8 @@ async function clickContinue(page) {
     if (button) {
       const isVisible = await button.isVisible();
       if (isVisible) {
+        const label = await getControlLabel(button);
+        if (isDangerousLabel(label)) return { navigated: false, blocked: label };
         const urlBefore = page.url();
         await button.click();
         await page.waitForTimeout(1500);
@@ -293,13 +296,13 @@ async function clickContinue(page) {
           await page.waitForLoadState("domcontentloaded", { timeout: 5000 });
         } catch {}
         if (page.url() !== urlBefore || (await hasNewContent(page))) {
-          return true;
+          return { navigated: true };
         }
       }
     }
   }
 
-  return false;
+  return { navigated: false };
 }
 
 /**
@@ -394,6 +397,8 @@ export async function scrapeService(serviceUrl, onProgress) {
   let pagesVisited = 0;
   let lastSignature = null;
   let notes = "";
+  let stopReason = "unknown";
+  const pages = [];
 
   try {
     console.log(`[scraper] Navigating to ${serviceUrl}`);
@@ -448,6 +453,7 @@ export async function scrapeService(serviceUrl, onProgress) {
 
     await dismissCookieBanner(page);
 
+    stopReason = "max-pages";
     for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
       const currentUrl = page.url();
       const heading = await getPageHeading(page);
@@ -457,10 +463,12 @@ export async function scrapeService(serviceUrl, onProgress) {
       const signature = `${currentUrl}::${heading}`;
       if (signature === lastSignature) {
         console.log(`[scraper] No change since last page ("${heading}"), stopping`);
+        stopReason = "no-change";
         break;
       }
       lastSignature = signature;
       pagesVisited++;
+      pages.push({ heading, url: currentUrl });
 
       console.log(`[scraper] Page ${pageNum + 1}: "${heading}" (${currentUrl})`);
 
@@ -472,12 +480,14 @@ export async function scrapeService(serviceUrl, onProgress) {
       if (await isAuthPage(page)) {
         console.log("[scraper] Hit authentication page, stopping");
         notes = "Requires authentication (GOV.UK One Login or Government Gateway). Could not navigate past the login page.";
+        stopReason = "auth";
         break;
       }
 
       // Check if we've reached the end
-      if (pageNum > 0 && (await isEndPage(page))) {
+      if (pageNum > 0 && (isStopHeading(heading) || (await isEndPage(page)))) {
         console.log("[scraper] Reached end page");
+        stopReason = "end-page";
         break;
       }
 
@@ -507,9 +517,15 @@ export async function scrapeService(serviceUrl, onProgress) {
       await fillFields(page, pageFields, heading);
 
       // Try to navigate to next page
-      const navigated = await clickContinue(page);
-      if (!navigated) {
+      const result = await clickContinue(page);
+      if (result.blocked) {
+        console.log(`[scraper] Refused to press "${result.blocked}", stopping`);
+        stopReason = `blocked: ${result.blocked}`;
+        break;
+      }
+      if (!result.navigated) {
         console.log("[scraper] Could not find a continue button, stopping");
+        stopReason = "no-continue";
         break;
       }
 
@@ -519,6 +535,7 @@ export async function scrapeService(serviceUrl, onProgress) {
   } catch (err) {
     console.error(`[scraper] Error: ${err.message}`);
     notes = `Scraper error: ${err.message}`;
+    stopReason = "error";
   } finally {
     await browser.close().catch(() => {});
   }
@@ -544,6 +561,8 @@ export async function scrapeService(serviceUrl, onProgress) {
 
   return {
     dataFields: uniqueFields,
+    pages,
+    stopReason,
     notes: notes || `Scraped ${pagesVisited} pages`,
   };
 }
